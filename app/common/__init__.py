@@ -28,24 +28,20 @@ def create_app(settings_module):
     app.url_map.strict_slashes = False
     # Registra manejadores de errores personalizados
     register_error_handlers(app)
+    @app.route('/')
+    def index():
+        return("indexpage")
+
     api = Api(app,prefix='/pruebaeos')
     api.add_resource(CatalogList, '/catalogo')
     api.add_resource(DownloadScene, '/descarga')
     Api(app, catch_all_404s=True)
-    @app.route('')
-    def index():
-        return("indexpage")
-    # adding the defined resources along with their corresponding urls
-    
-    # @app.route('/catalogo')
-    # def bar():
-    #     return "The URL for this page is {} donde se listaran los resultados de la busqueda".format(url_for('bar'))
     return app
 
 def register_error_handlers(app):
     @app.errorhandler(Exception)
     def handle_exception_error(e):
-        return jsonify({'msg': 'Internal server error'}), 500
+        return jsonify({'msg': 'Internal server error',"error":e}), 500
     @app.errorhandler(405)
     def handle_405_error(e):
         return jsonify({'msg': 'Method not allowed'}), 405
