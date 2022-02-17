@@ -4,10 +4,11 @@ import requests
 import sys
 import time
 import argparse
-
-from flask import request,jsonify
+import tarfile
+import re
+from flask import request,jsonify,request,current_app
 from flask_restful import  Api,Resource
-
+from clint.textui import progress
 from app.common.error_handling import AppErrorBaseClass,ObjectNotFound
 
 def sendRequest(url, data, apiKey = None):  
@@ -63,10 +64,94 @@ def getToken():
         token = setToken()
     return token
 
-def write_download(url,output):
-    r = requests.get(url)
-    with open(output, 'wb') as f:
-        f.write(r.content)
+def write_download(url,output_folder):
+    jsonSalida = {}
+    r = requests.get(url,stream=True)
+    local_filename = r.headers["Content-Disposition"].split("=")[-1].replace('"',"")
+    jsonSalida["escena"]=local_filename
+    local_filename = f"{output_folder}/{local_filename}"
+    jsonSalida["url"]=f"{request.host_url}pruebaeos{local_filename.split('.')[1]}"
+    with open(local_filename, 'wb') as f:
+        total_length = int(r.headers.get('content-length'))
+        for ch in progress.bar(r.iter_content(chunk_size = 2391975), expected_size=(total_length/1024) + 1):
+            if ch:
+                f.write(ch)
+    file = tarfile.open(local_filename)
+    print(file.getnames())
+    file.extractall(f".{local_filename.split('.')[1]}")
+    file.close()
+    return jsonSalida
+
+def downloadImage(data,token,serviceUrl):
+    json_request = {
+            'datasetName' : data['dataset'],
+            "entityIds":data['escena']
+    }
+    downloadOptions = sendRequest(f"{serviceUrl}/download-options", json_request, token)
+    downloads=[]
+    for product in downloadOptions:
+        if product['available'] == True and product["productName"] == "Level-1 GeoTIFF Data Product":
+            downloads.append(
+                {'entityId' : product['entityId'],
+                'productId' : product['id']}
+            )
+    if downloads:
+        os.makedirs(data["out_dir"], exist_ok=True)
+        requestedDownloadsCount = len(downloads)
+        label = "download-eos"
+        payload = {'downloads' : downloads,'label' : label}
+        requestResults = sendRequest(f"{serviceUrl}/download-request", payload, token)
+        if requestResults['preparingDownloads'] != None and len(requestResults['preparingDownloads']) > 0:
+            payload = {'label' : label}
+            moreDownloadUrls = sendRequest(f"{serviceUrl}/download-retrieve", payload, token)
+            downloadIds = []
+            for download in moreDownloadUrls['available']:
+                downloadIds.append(download['downloadId'])
+                print("DOWNLOAD: " + download['url'])
+                return write_download(download['url'],data["out_dir"])
+                
+            for download in moreDownloadUrls['requested']:
+                downloadIds.append(download['downloadId'])
+                print("DOWNLOAD: " + download['url'])
+                return write_download(download['url'],data["out_dir"])
+                
+            # Didn't get all of the reuested downloads, call the download-retrieve method again probably after 30 seconds
+            while len(downloadIds) < requestedDownloadsCount: 
+                preparingDownloads = requestedDownloadsCount - len(downloadIds)
+                print("\n", preparingDownloads, "downloads are not available. Waiting for 30 seconds.\n")
+                time.sleep(30)
+                print("Trying to retrieve data\n")
+                moreDownloadUrls = sendRequest(f"{serviceUrl}/download-retrieve", payload, token)
+                for download in moreDownloadUrls['available']:
+                    if download['downloadId'] not in downloadIds:
+                        downloadIds.append(download['downloadId'])
+                        downloadIds.append(download['url'])
+                        print("DOWNLOAD: " + download['url'])
+                        return write_download(download['url'],data["out_dir"])
+        else:
+            # Get all available downloads
+            for download in requestResults['availableDownloads']:
+                print("DOWNLOAD: " + download['url'])
+                return write_download(download['url'],data["out_dir"])
+    else:
+        raise ObjectNotFound('No se obtuvieron resultados para la consulta')
+
+def listResource(data,token,serviceUrl):
+    jsonSalida = {}
+    jsonSalida["escena"]=data["escena"]
+    local_file = f"{data['out_dir']}/{data['escena']}"
+    if os.path.isdir(local_file):
+        jsonSalida["url"]=f"{request.host_url}pruebaeos{local_file}".replace(".","")
+        jsonSalida["archivos"]=[]
+        bandas ={}
+        files = [f for f in os.listdir(local_file) if re.search(r'_B\d{1,2}.TIF$',f) ]
+        for file in files:
+            number = file.split(".")[0].split("_")[-1].replace("B","")
+            bandas[f"bandas{number}"]=file
+        jsonSalida["archivos"].append(bandas)
+    else:
+        jsonSalida["mensaje"] = "Escena no encontrada"
+    return jsonSalida
 
 class CatalogList(Resource):
     def post(self):
@@ -119,56 +204,10 @@ class DownloadScene(Resource):
         data = request.get_json()
         token = getToken()
         serviceUrl = os.getenv("USGS_URL")
-        json_request = {
-            'datasetName' : data['dataset'],
-            "entityIds":data['escena']
-        }
-        downloadOptions = sendRequest(f"{serviceUrl}/download-options", json_request, token)
-        downloads=[]
-        for product in downloadOptions:
-            if product['available'] == True and product["productName"] == "Level-1 GeoTIFF Data Product":
-                downloads.append(
-                    {'entityId' : product['entityId'],
-                    'productId' : product['id']}
-                )
-        if downloads:
-            os.makedirs(data["out_dir"], exist_ok=True)
-            # create_folder(data["out_dir"])
-            requestedDownloadsCount = len(downloads)
-            label = "download-eos"
-            payload = {'downloads' : downloads,'label' : label}
-            requestResults = sendRequest(f"{serviceUrl}/download-request", payload, token)
-            if requestResults['preparingDownloads'] != None and len(requestResults['preparingDownloads']) > 0:
-                payload = {'label' : label}
-                moreDownloadUrls = sendRequest(f"{serviceUrl}/download-retrieve", payload, token)
-                downloadIds = []
-                for download in moreDownloadUrls['available']:
-                    downloadIds.append(download['downloadId'])
-                    write_download(download['url'],data["out_dir"])
-                    print("DOWNLOAD: " + download['url'])
-                    
-                for download in moreDownloadUrls['requested']:
-                    downloadIds.append(download['downloadId'])
-                    write_download(download['url'],data["out_dir"])
-                    print("DOWNLOAD: " + download['url'])
-                    
-                # Didn't get all of the reuested downloads, call the download-retrieve method again probably after 30 seconds
-                while len(downloadIds) < requestedDownloadsCount: 
-                    preparingDownloads = requestedDownloadsCount - len(downloadIds)
-                    print("\n", preparingDownloads, "downloads are not available. Waiting for 30 seconds.\n")
-                    time.sleep(30)
-                    print("Trying to retrieve data\n")
-                    moreDownloadUrls = sendRequest(f"{serviceUrl}/download-retrieve", payload, token)
-                    for download in moreDownloadUrls['available']:
-                        if download['downloadId'] not in downloadIds:
-                            downloadIds.append(download['downloadId'])
-                            print("DOWNLOAD: " + download['url'])
-                            write_download(download['url'],data["out_dir"])
-            else:
-                # Get all available downloads
-                for download in requestResults['availableDownloads']:
-                    # TODO :: Implement a downloading routine
-                    print("DOWNLOAD: " + download['url'])
+        if data['accion'] == 'descarga':
+            return downloadImage(data,token,serviceUrl)
+        elif data['accion'] == 'listar':
+            return listResource(data,token,serviceUrl)
         else:
-            raise ObjectNotFound('No se obtuvieron resultados para la consulta')
-        return downloadIds
+            raise ObjectNotFound('Accion no valida')
+
