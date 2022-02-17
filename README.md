@@ -23,8 +23,7 @@ Solicitudes USGS:
 
 ## Instalacion
 
-1. Clone el repositorio en una ubicación conocidad.
-   USER_USGS = "lapyemperor"
+1. Clone el repositorio en una ubicación conocida.
 2. En el archivo _.env_ configure (**USER_USGS**,**USER_PASS**)con el usuario y la contraseña para acceder al API https://m2m.cr.usgs.gov/ (sin estas credenciales no podrá usar el API-REST local)
 3. Debe tener instalado docker y docker-compose en su equipo y poder acceder a sus funciones desde la terminal.
 4. Abra desde la terminal la carpeta EOS y ejecute el siguiente comando:
